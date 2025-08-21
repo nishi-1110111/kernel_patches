@@ -1,0 +1,276 @@
+From fe7e000829b917a8413ce2463b7c2958efbf996a Mon Sep 17 00:00:00 2001
+From: Cloud_Yun <1770669041@qq.com>
+Date: Fri, 15 Aug 2025 16:03:08 +0900
+Subject: [PATCH] KernelSU: Support tracepoint hook type A new KernelSU
+ integration approach, which is more stable, simple, has lower performance
+ overhead and better compatibility. Also, it supports LKM mode
+
+Signed-off-by: Cloud_Yun <1770669041@qq.com>
+---
+ drivers/input/input.c | 10 ++++++++--
+ drivers/tty/pty.c     | 11 +++++++++--
+ fs/exec.c             | 20 ++++++++++++++++----
+ fs/open.c             | 10 ++++++++--
+ fs/read_write.c       | 10 ++++++++--
+ fs/stat.c             | 20 ++++++++++++++++----
+ 6 files changed, 65 insertions(+), 16 deletions(-)
+
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index f3a3b5748d779..96eaa869a14ac 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -27,6 +27,10 @@
+ #include "input-core-private.h"
+ #include "input-poller.h"
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ MODULE_AUTHOR("Vojtech Pavlik <vojtech@suse.cz>");
+ MODULE_DESCRIPTION("Input core");
+ MODULE_LICENSE("GPL");
+@@ -420,7 +424,7 @@ void input_handle_event(struct input_dev *dev,
+  * to 'seed' initial state of a switch or initial position of absolute
+  * axis, etc.
+  */
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern bool ksu_input_hook __read_mostly;
+ extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+ #endif
+@@ -430,7 +434,9 @@ void input_event(struct input_dev *dev,
+ {
+ 	unsigned long flags;
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_input_hook(&type, &code, &value);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	if (unlikely(ksu_input_hook))
+ 		ksu_handle_input_handle_event(&type, &code, &value);
+ #endif
+diff --git a/drivers/tty/pty.c b/drivers/tty/pty.c
+index edeaeb59a86a2..1fa057ebc9567 100644
+--- a/drivers/tty/pty.c
++++ b/drivers/tty/pty.c
+@@ -31,6 +31,10 @@
+ #include <linux/compat.h>
+ #include "tty.h"
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ #undef TTY_DEBUG_HANGUP
+ #ifdef TTY_DEBUG_HANGUP
+ # define tty_debug_hangup(tty, f, args...)	tty_debug(tty, f, ##args)
+@@ -702,7 +706,7 @@ static struct tty_struct *ptm_unix98_lookup(struct tty_driver *driver,
+  *	This provides our locking for the tty pointer.
+  */
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern int ksu_handle_devpts(struct inode*);
+ #endif
+ 
+@@ -711,9 +715,12 @@ static struct tty_struct *pts_unix98_lookup(struct tty_driver *driver,
+ {
+ 	struct tty_struct *tty;
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_devpts_hook((struct inode *)file->f_path.dentry->d_inode);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	ksu_handle_devpts((struct inode *)file->f_path.dentry->d_inode);
+ #endif
++
+ 	mutex_lock(&devpts_mutex);
+ 	tty = devpts_get_priv(file->f_path.dentry);
+ 	mutex_unlock(&devpts_mutex);
+diff --git a/fs/exec.c b/fs/exec.c
+index ad9ceead792b6..919bbde541123 100644
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -78,6 +78,10 @@
+ #include <trace/events/sched.h>
+ #include <trace/hooks/sched.h>
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ static int bprm_creds_from_file(struct linux_binprm *bprm);
+ 
+ int suid_dumpable = 0;
+@@ -2045,7 +2049,7 @@ int kernel_execve(const char *kernel_filename,
+ 	return retval;
+ }
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern bool ksu_execveat_hook __read_mostly;
+ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,
+ 			void *envp, int *flags);
+@@ -2059,12 +2063,16 @@ static int do_execve(struct filename *filename,
+ {
+ 	struct user_arg_ptr argv = { .ptr.native = __argv };
+ 	struct user_arg_ptr envp = { .ptr.native = __envp };
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_execveat_hook((int *)AT_FDCWD, &filename, &argv, &envp, 0);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	if (unlikely(ksu_execveat_hook))
+ 		ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);
+ 	else
+ 		ksu_handle_execveat_sucompat((int *)AT_FDCWD, &filename, NULL, NULL, NULL);
+ #endif
++
+ 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+ }
+ 
+@@ -2092,10 +2100,14 @@ static int compat_do_execve(struct filename *filename,
+ 		.is_compat = true,
+ 		.ptr.compat = __envp,
+ 	};
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_execveat_sucompat_hook((int *)AT_FDCWD, &filename, NULL, NULL, NULL); /* 32-bit su support */
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	if (!ksu_execveat_hook)
+-		ksu_handle_execveat_sucompat((int *)AT_FDCWD, &filename, NULL, NULL, NULL); /* 32-bit su */
++		ksu_handle_execveat_sucompat((int *)AT_FDCWD, &filename, NULL, NULL, NULL); /* 32-bit su support */
+ #endif
++
+ 	return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);
+ }
+ 
+diff --git a/fs/open.c b/fs/open.c
+index b17fd9542a298..851bb90ead6bc 100644
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -40,6 +40,10 @@
+ #include "internal.h"
+ #include <trace/hooks/syscall_check.h>
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ int do_truncate(struct user_namespace *mnt_userns, struct dentry *dentry,
+ 		loff_t length, unsigned int time_attrs, struct file *filp)
+ {
+@@ -512,14 +516,16 @@ static long do_faccessat(int dfd, const char __user *filename, int mode, int fla
+ 	return res;
+ }
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,
+ 			                    int *flags);
+ #endif
+ 
+ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ {
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_faccessat_hook(&dfd, &filename, &mode, NULL);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+ #endif
+ 	return do_faccessat(dfd, filename, mode, 0);
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 5835a91502db0..17060426aa689 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -25,6 +25,10 @@
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ const struct file_operations generic_ro_fops = {
+ 	.llseek		= generic_file_llseek,
+ 	.read_iter	= generic_file_read_iter,
+@@ -618,7 +622,7 @@ ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
+ 	return ret;
+ }
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern bool ksu_vfs_read_hook __read_mostly;
+ extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+ 			size_t *count_ptr);
+@@ -626,7 +630,9 @@ extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr,
+ 
+ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+ {
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_sys_read_hook(fd, &buf, &count);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	if (unlikely(ksu_vfs_read_hook)) 
+ 		ksu_handle_sys_read(fd, &buf, &count);
+ #endif
+diff --git a/fs/stat.c b/fs/stat.c
+index b92e17c8d5f3b..20c5493876bf3 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -28,6 +28,10 @@
+ #include "internal.h"
+ #include "mount.h"
+ 
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++#include <../drivers/kernelsu/ksu_trace.h>
++#endif
++
+ #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+ extern void susfs_sus_ino_for_generic_fillattr(unsigned long ino, struct kstat *stat);
+ #endif
+@@ -478,7 +482,7 @@ SYSCALL_DEFINE2(newlstat, const char __user *, filename,
+ 	return cp_new_stat(&stat, statbuf);
+ }
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_MANUAL_HOOK)
+ extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+ #endif
+ 
+@@ -489,9 +493,12 @@ SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+ 	struct kstat stat;
+ 	int error;
+ 
+-#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_WITH_KPROBES)
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_stat_hook(&dfd, &filename, &flag);
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
+ 	ksu_handle_stat(&dfd, &filename, &flag);
+ #endif
++
+ 	error = vfs_fstatat(dfd, filename, &stat, flag);
+ 	if (error)
+ 		return error;
+@@ -643,9 +650,14 @@ SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
+ 	struct kstat stat;
+ 	int error;
+ 
+-#if defined(CONFIG_KSU) && defined(CONFIG_COMPAT) && !defined(CONFIG_KSU_WITH_KPROBES)
+-	ksu_handle_stat(&dfd, &filename, &flag); /* 32-bit su */
++#ifdef CONFIG_COMPAT
++#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
++    trace_ksu_trace_stat_hook(&dfd, &filename, &flag); /* 32-bit su support */
++#elif defined(CONFIG_KSU_MANUAL_HOOK)
++	ksu_handle_stat(&dfd, &filename, &flag); /* 32-bit su support */
+ #endif
++#endif
++
+ 	error = vfs_fstatat(dfd, filename, &stat, flag);
+ 	if (error)
+ 		return error;
+-- 
+2.43.0
+
